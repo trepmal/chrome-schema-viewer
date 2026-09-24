@@ -28,3 +28,7 @@ structured data (`<script type="application/ld+json">`).
 Open `test.html` in Chrome to try it out (to use it with `file://` URLs, enable
 "Allow access to file URLs" on the extension's details page).
 After editing the source, click the reload icon on `chrome://extensions` and reopen DevTools.
+
+## Screenshot
+
+![screenshot](example.png)
