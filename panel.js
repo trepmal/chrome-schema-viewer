@@ -1,17 +1,21 @@
 'use strict';
 
-// Runs in the inspected page. Returns every <script type=...> so the panel
-// can decide what to show; parsing happens here in the panel, not the page.
-const COLLECT = `(() => {
+// Runs in the inspected page (serialized via toString, so it must be
+// self-contained). Returns raw page data; the panel does the rendering.
+function collectPage() {
+  const where = (node) => (node.closest('head') ? 'head' : 'body');
+  const tokens = (value) => (value || '').trim().split(/\s+/).filter(Boolean);
+
   const scripts = [];
   document.querySelectorAll('script[type]').forEach((s) => {
     scripts.push({
       type: (s.getAttribute('type') || '').trim().toLowerCase(),
       text: s.textContent,
       id: s.id || '',
-      where: s.closest('head') ? 'head' : 'body',
+      where: where(s),
     });
   });
+
   const meta = [];
   document.querySelectorAll('meta[property], meta[name]').forEach((m) => {
     const key = (m.getAttribute('property') || m.getAttribute('name') || '').trim();
@@ -19,8 +23,86 @@ const COLLECT = `(() => {
       meta.push({ key, content: m.getAttribute('content') || '' });
     }
   });
-  return { url: location.href, ready: document.readyState, scripts, meta };
-})()`;
+
+  const robots = [];
+  document.querySelectorAll('meta[name]').forEach((m) => {
+    const key = m.getAttribute('name').trim();
+    if (/^(robots|google|[\w-]*bot|googlebot-[\w-]+)$/i.test(key)) {
+      robots.push({ key, content: m.getAttribute('content') || '' });
+    }
+  });
+
+  const canonical = [...document.querySelectorAll('link[rel~="canonical" i]')].map((l) => l.href);
+  const hreflang = [...document.querySelectorAll('link[rel~="alternate" i][hreflang]')]
+    .map((l) => ({ lang: l.getAttribute('hreflang'), href: l.href }));
+
+  // Microdata, following the WHATWG property-value rules.
+  const SCHEMA_ORG = /^https?:\/\/schema\.org\//i;
+  const propValue = (node) => {
+    const tag = node.tagName.toLowerCase();
+    if (tag === 'meta') return node.getAttribute('content') || '';
+    if (['audio', 'embed', 'iframe', 'img', 'source', 'track', 'video'].includes(tag)) return node.src || '';
+    if (['a', 'area', 'link'].includes(tag)) return node.href || '';
+    if (tag === 'object') return node.data || '';
+    if (tag === 'data' || tag === 'meter') return node.getAttribute('value') || '';
+    if (tag === 'time' && node.hasAttribute('datetime')) return node.getAttribute('datetime');
+    return node.textContent.trim().replace(/\s+/g, ' ');
+  };
+  const readItem = (root, ancestors) => {
+    ancestors.add(root);
+    const item = {};
+    const types = tokens(root.getAttribute('itemtype')).map((t) => t.replace(SCHEMA_ORG, ''));
+    if (types.length) item['@type'] = types.length === 1 ? types[0] : types;
+    if (root.hasAttribute('itemid')) item['@id'] = root.getAttribute('itemid');
+
+    const props = [];
+    const walk = (node) => {
+      for (const child of node.children) {
+        if (child.hasAttribute('itemprop')) props.push(child);
+        if (!child.hasAttribute('itemscope')) walk(child);
+      }
+    };
+    walk(root);
+    for (const id of tokens(root.getAttribute('itemref'))) {
+      const ref = document.getElementById(id);
+      if (!ref) continue;
+      if (ref.hasAttribute('itemprop')) props.push(ref);
+      if (!ref.hasAttribute('itemscope')) walk(ref);
+    }
+
+    for (const p of props) {
+      let value;
+      if (!p.hasAttribute('itemscope')) value = propValue(p);
+      else if (ancestors.has(p)) value = '[circular reference]';
+      else value = readItem(p, ancestors);
+      for (const name of tokens(p.getAttribute('itemprop'))) {
+        item[name] = name in item ? [].concat(item[name], [value]) : value;
+      }
+    }
+    ancestors.delete(root);
+    return item;
+  };
+  const microdata = [...document.querySelectorAll('[itemscope]:not([itemprop])')].map((node) => {
+    const data = readItem(node, new Set());
+    if (tokens(node.getAttribute('itemtype')).some((t) => SCHEMA_ORG.test(t))) {
+      return { data: { '@context': 'https://schema.org', ...data }, tag: node.tagName.toLowerCase(), id: node.id || '', where: where(node) };
+    }
+    return { data, tag: node.tagName.toLowerCase(), id: node.id || '', where: where(node) };
+  });
+
+  return {
+    url: location.href,
+    ready: document.readyState,
+    scripts,
+    meta,
+    robots,
+    canonical,
+    hreflang,
+    microdata,
+  };
+}
+
+const COLLECT = `(${collectPage.toString()})()`;
 
 const OG_REQUIRED = ['og:title', 'og:type', 'og:image', 'og:url'];
 
@@ -167,21 +249,23 @@ function renderBlock(script, n, raw) {
   head.appendChild(el('span', 'title', `#${n}`));
   head.appendChild(el('span', 'meta', script.type));
 
-  let parsed;
+  let parsed = script.data;
   let error = null;
-  try {
-    parsed = JSON.parse(script.text);
-  } catch (e) {
-    error = e.message;
+  if (parsed === undefined) {
+    try {
+      parsed = JSON.parse(script.text);
+    } catch (e) {
+      error = e.message;
+    }
   }
 
   if (!error) {
     for (const t of typesOf(parsed)) head.appendChild(el('span', 'type-badge', t));
   }
 
-  const meta = [`in <${script.where}>`];
+  const meta = [script.tag ? `<${script.tag}> in <${script.where}>` : `in <${script.where}>`];
   if (script.id) meta.push(`id="${script.id}"`);
-  meta.push(`${script.text.length.toLocaleString()} chars`);
+  if (script.text !== undefined) meta.push(`${script.text.length.toLocaleString()} chars`);
   head.appendChild(el('span', 'meta', meta.join(' · ')));
   head.appendChild(el('span', 'spacer'));
 
@@ -297,19 +381,140 @@ function renderMeta(meta) {
   return { og: og.length, tw: tw.length };
 }
 
+// ---------- Robots meta ----------
+
+// Directives that stop a page being indexed or its links followed.
+const ROBOTS_BLOCKING = ['noindex', 'nofollow', 'none'];
+
+function parseDirectives(content) {
+  return content.split(',').map((d) => d.trim()).filter(Boolean);
+}
+
+function renderRobots(robots) {
+  const block = el('section', 'block meta-block');
+  const head = el('div', 'block-head');
+  const body = el('div', 'block-body');
+
+  head.appendChild(el('span', 'title', 'Robots'));
+
+  const blocking = new Set();
+  for (const { key, content } of robots) {
+    for (const d of parseDirectives(content)) {
+      if (ROBOTS_BLOCKING.includes(d.toLowerCase())) blocking.add(`${key.toLowerCase()}: ${d.toLowerCase()}`);
+    }
+  }
+
+  if (!robots.length) {
+    head.appendChild(el('span', 'meta', 'no tags'));
+    body.appendChild(el('div', 'hint', 'No robots meta tags. Crawlers default to index, follow.'));
+  } else {
+    head.appendChild(el('span', 'meta', `${robots.length} tag${robots.length === 1 ? '' : 's'}`));
+    if (blocking.size) head.appendChild(el('span', 'warn', [...blocking].join(', ')));
+
+    const table = el('table', 'meta-table');
+    for (const { key, content } of robots) {
+      const tr = el('tr');
+      tr.dataset.search = (key + ' ' + content).toLowerCase();
+      tr.appendChild(el('td', 'k', key));
+      const td = el('td');
+      for (const d of parseDirectives(content)) {
+        const isBlocking = ROBOTS_BLOCKING.includes(d.toLowerCase());
+        td.appendChild(el('span', isBlocking ? 'directive blocking' : 'directive', d));
+      }
+      tr.appendChild(td);
+      table.appendChild(tr);
+    }
+    body.appendChild(table);
+  }
+
+  body.appendChild(el('div', 'hint robots-note',
+    'An X-Robots-Tag HTTP header or robots.txt can also affect crawling and indexing, and neither is shown here.'));
+
+  block.appendChild(head);
+  block.appendChild(body);
+  output.appendChild(block);
+  return { count: robots.length, blocking: [...blocking] };
+}
+
+// ---------- Canonical / hreflang ----------
+
+const stripHash = (u) => u.split('#')[0];
+
+function renderLinks(pageUrl, canonical, hreflang) {
+  const block = el('section', 'block meta-block');
+  const head = el('div', 'block-head');
+  const body = el('div', 'block-body');
+  const warnings = [];
+
+  head.appendChild(el('span', 'title', 'Canonical & hreflang'));
+  head.appendChild(el('span', 'meta',
+    `${hreflang.length} alternate${hreflang.length === 1 ? '' : 's'}`));
+
+  const table = el('table', 'meta-table');
+  const addRow = (label, url, chips = []) => {
+    const tr = el('tr');
+    tr.dataset.search = (label + ' ' + url + ' ' + chips.map((c) => c[0]).join(' ')).toLowerCase();
+    tr.appendChild(el('td', 'k', label));
+    const td = el('td', 's');
+    td.appendChild(renderValue(url));
+    for (const [text, cls] of chips) td.appendChild(el('span', `directive ${cls}`, text));
+    tr.appendChild(td);
+    table.appendChild(tr);
+  };
+
+  const canonicalPointsElsewhere = canonical.length === 1
+    && stripHash(canonical[0]) !== stripHash(pageUrl);
+  if (!canonical.length) warnings.push('No canonical');
+  if (canonical.length > 1) warnings.push(`${canonical.length} canonicals`);
+  for (const url of canonical) {
+    addRow('canonical', url, canonicalPointsElsewhere ? [['not this URL', 'info']] : [['self', 'ok']]);
+  }
+
+  // hreflang alternates should include one pointing back at this page.
+  const self = stripHash(canonical[0] || pageUrl);
+  const seen = {};
+  for (const { lang } of hreflang) seen[lang.toLowerCase()] = (seen[lang.toLowerCase()] || 0) + 1;
+  for (const { lang, href } of hreflang) {
+    const chips = [];
+    if (stripHash(href) === self) chips.push(['self', 'ok']);
+    if (seen[lang.toLowerCase()] > 1) chips.push(['duplicate', 'blocking']);
+    addRow(`hreflang="${lang}"`, href, chips);
+  }
+  if (hreflang.length) {
+    if (!hreflang.some(({ href }) => stripHash(href) === self)) warnings.push('No self-referencing hreflang');
+    if (Object.values(seen).some((c) => c > 1)) warnings.push('Duplicate hreflang values');
+  }
+
+  if (warnings.length) head.appendChild(el('span', 'warn', warnings.join(' · ')));
+  if (table.children.length) body.appendChild(table);
+  if (!hreflang.length) body.appendChild(el('div', 'hint', 'No hreflang alternates.'));
+  else if (!('x-default' in seen)) body.appendChild(el('div', 'hint', 'No x-default alternate (optional, but recommended).'));
+
+  block.appendChild(head);
+  block.appendChild(body);
+  output.appendChild(block);
+  return { warnings, canonicalPointsElsewhere, hreflang: hreflang.length };
+}
+
 function render() {
   output.replaceChildren();
   if (!lastResult) return;
 
-  const { url, scripts, meta = [] } = lastResult;
+  const {
+    url, scripts, meta = [], robots = [], canonical = [], hreflang = [], microdata = [],
+  } = lastResult;
   const includeOther = $('allJson').checked;
   const raw = $('raw').checked;
   const showMeta = $('showMeta').checked;
+  const showMicrodata = $('showMicrodata').checked;
 
   $('validate').href = 'https://validator.schema.org/#url=' + encodeURIComponent(url);
   $('richResults').href = 'https://search.google.com/test/rich-results?url=' + encodeURIComponent(url);
 
   const shown = scripts.filter((s) => isLdJson(s.type) || (includeOther && isOtherJson(s.type)));
+  if (showMicrodata) {
+    for (const item of microdata) shown.push({ ...item, type: 'microdata' });
+  }
 
   const allTypes = [];
   let errors = 0;
@@ -322,10 +527,13 @@ function render() {
 
   if (!shown.length) {
     output.appendChild(el('div', 'empty',
-      includeOther ? 'No JSON script tags found on this page.' : 'No application/ld+json found on this page.'));
+      `No ${[includeOther ? 'JSON script tags' : 'JSON-LD', showMicrodata ? 'microdata' : '']
+        .filter(Boolean).join(' or ')} found on this page.`));
   }
 
   const metaCounts = showMeta ? renderMeta(meta) : { og: 0, tw: 0 };
+  const robotsInfo = showMeta ? renderRobots(robots) : null;
+  const linksInfo = showMeta ? renderLinks(url, canonical, hreflang) : null;
 
   const counts = {};
   for (const t of allTypes) counts[t] = (counts[t] || 0) + 1;
@@ -341,6 +549,9 @@ function render() {
   }
   if (metaCounts.og) parts.push(`${metaCounts.og} Open Graph tag${metaCounts.og === 1 ? '' : 's'}`);
   if (metaCounts.tw) parts.push(`${metaCounts.tw} Twitter tag${metaCounts.tw === 1 ? '' : 's'}`);
+  if (robotsInfo?.blocking.length) parts.push(robotsInfo.blocking.join(', '));
+  if (linksInfo?.canonicalPointsElsewhere) parts.push('canonical points elsewhere');
+  if (linksInfo?.hreflang) parts.push(`${linksInfo.hreflang} hreflang`);
   parts.push(url);
   summary.textContent = parts.join(' — ');
 
@@ -422,6 +633,7 @@ $('collapse').addEventListener('click', () => setAllOpen(false));
 $('raw').addEventListener('change', render);
 $('allJson').addEventListener('change', render);
 $('showMeta').addEventListener('change', render);
+$('showMicrodata').addEventListener('change', render);
 $('filter').addEventListener('input', applyFilter);
 
 chrome.devtools.network.onNavigated.addListener(scanAfterNavigation);

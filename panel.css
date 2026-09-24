@@ -182,3 +182,19 @@ mark { background: var(--highlight); color: inherit; }
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+
+/* Robots */
+.directive {
+  display: inline-block;
+  margin: 0 4px 2px 0;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+}
+.directive.blocking { background: var(--error-bg); color: var(--error); border-color: var(--error); font-weight: 600; }
+.block-body .hint { color: var(--muted); font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+.robots-note { margin-top: 6px; font-size: 11px; }
+.directive.ok { color: var(--type); border-color: var(--type); }
+.directive.info { color: var(--muted); font-style: italic; }
+.meta-table td.s .directive { margin-left: 6px; }

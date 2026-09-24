@@ -15,11 +15,14 @@ structured data (`<script type="application/ld+json">`).
 ## Features
 
 - Collapsible tree view of every JSON-LD block, with `@type` badges
+- Microdata (`itemscope` / `itemprop`) converted to the same JSON-LD-style tree
 - Summary of all top-level types (including items inside `@graph`)
 - Invalid JSON is flagged with the parser error and raw source
 - Raw (pretty-printed) view, per-block copy, expand/collapse all
 - Filter by key or value
 - Open Graph (`og:*`, `article:*`, etc.) and Twitter card tags, with a link-preview card and warnings for missing required tags
+- Robots meta tags (`robots`, `googlebot`, `bingbot`, …) with blocking directives (`noindex`, `nofollow`, `none`) highlighted
+- Canonical and `hreflang` alternates, flagging missing/multiple canonicals, a canonical pointing elsewhere, missing self-reference, and duplicate languages
 - Optional: include other JSON script tags (`application/json`, etc.)
 - Auto-rescans after navigation; **Refresh** picks up JSON-LD injected later by JS
 - Links to the Schema.org validator and Google Rich Results Test for the current URL
