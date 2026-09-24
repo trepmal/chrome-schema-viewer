@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <link rel="stylesheet" href="panel.css">
+  </head>
+  <body>
+    <header class="toolbar">
+      <button id="refresh" title="Re-scan the page">⟳ Refresh</button>
+      <span class="sep"></span>
+      <button id="expand">Expand all</button>
+      <button id="collapse">Collapse all</button>
+      <span class="sep"></span>
+      <label><input type="checkbox" id="raw"> Raw JSON</label>
+      <label title="Also show application/json and other JSON script tags">
+        <input type="checkbox" id="allJson"> Include other JSON scripts
+      </label>
+      <label title="Show og:* and twitter:* meta tags">
+        <input type="checkbox" id="showMeta" checked> Open Graph / Twitter
+      </label>
+      <span class="sep"></span>
+      <input type="search" id="filter" placeholder="Filter keys / values">
+      <span class="spacer"></span>
+      <a id="validate" target="_blank" rel="noopener" title="Open this URL in the Schema.org validator">Schema.org validator ↗</a>
+      <a id="richResults" target="_blank" rel="noopener" title="Open this URL in Google's Rich Results Test">Rich Results Test ↗</a>
+    </header>
+    <div id="summary" class="summary"></div>
+    <main id="output"></main>
+    <script src="panel.js"></script>
+  </body>
+</html>

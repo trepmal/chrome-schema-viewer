@@ -1,0 +1,8 @@
+{
+  "manifest_version": 3,
+  "name": "Schema Viewer",
+  "version": "1.0.0",
+  "description": "Adds a DevTools panel that displays the page's structured data (application/ld+json).",
+  "devtools_page": "devtools.html",
+  "minimum_chrome_version": "102"
+}
