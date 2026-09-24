@@ -21,7 +21,9 @@ structured data (`<script type="application/ld+json">`).
 - Raw (pretty-printed) view, per-block copy, expand/collapse all
 - Filter by key or value
 - Open Graph (`og:*`, `article:*`, etc.) and Twitter card tags, with a link-preview card and warnings for missing required tags
-- Robots meta tags (`robots`, `googlebot`, `bingbot`, …) with blocking directives (`noindex`, `nofollow`, `none`) highlighted
+- Robots meta tags and the `X-Robots-Tag` response header (`robots`, `googlebot`, `bingbot`, …) with blocking directives (`noindex`, `nofollow`, `none`) highlighted
+  - The header is read from the original page load when DevTools was open at the time; otherwise the
+    panel offers to reload the page or make a fresh `HEAD` request from the page to read it
 - Canonical and `hreflang` alternates, flagging missing/multiple canonicals, a canonical pointing elsewhere, missing self-reference, and duplicate languages
 - Optional: include other JSON script tags (`application/json`, etc.)
 - Auto-rescans after navigation; **Refresh** picks up JSON-LD injected later by JS

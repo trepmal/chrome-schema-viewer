@@ -198,3 +198,13 @@ mark { background: var(--highlight); color: inherit; }
 .directive.ok { color: var(--type); border-color: var(--type); }
 .directive.info { color: var(--muted); font-style: italic; }
 .meta-table td.s .directive { margin-left: 6px; }
+.block-body button.inline {
+  font: 11px system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 6px;
+  margin-right: 4px;
+  cursor: pointer;
+}

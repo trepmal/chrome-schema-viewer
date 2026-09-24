@@ -108,6 +108,8 @@ const OG_REQUIRED = ['og:title', 'og:type', 'og:image', 'og:url'];
 
 const DEFAULT_OPEN_DEPTH = 2;
 
+const stripHash = (u) => u.split('#')[0];
+
 const $ = (id) => document.getElementById(id);
 const output = $('output');
 const summary = $('summary');
@@ -390,55 +392,207 @@ function parseDirectives(content) {
   return content.split(',').map((d) => d.trim()).filter(Boolean);
 }
 
-function renderRobots(robots) {
+// Directives whose value contains a colon, so aren't mistaken for a
+// "useragent: directives" prefix in X-Robots-Tag.
+const ROBOTS_VALUED = ['max-snippet', 'max-image-preview', 'max-video-preview', 'unavailable_after'];
+
+// X-Robots-Tag values may be scoped to a crawler: "googlebot: noindex, nofollow".
+function parseXRobotsTag(value) {
+  const groups = [];
+  let current = null;
+  for (let token of parseDirectives(value)) {
+    const m = token.match(/^([a-z][\w-]*)\s*:\s*(.*)$/i);
+    if (m && !ROBOTS_VALUED.includes(m[1].toLowerCase())) {
+      current = { ua: m[1], directives: [] };
+      groups.push(current);
+      token = m[2].trim();
+      if (!token) continue;
+    }
+    if (!current) {
+      current = { ua: null, directives: [] };
+      groups.push(current);
+    }
+    current.directives.push(token);
+  }
+  return groups;
+}
+
+function renderRobots(robots, headerInfo) {
   const block = el('section', 'block meta-block');
   const head = el('div', 'block-head');
   const body = el('div', 'block-body');
+  const table = el('table', 'meta-table');
 
   head.appendChild(el('span', 'title', 'Robots'));
 
+  const rows = robots.map(({ key, content }) => ({ label: key, directives: parseDirectives(content) }));
+  const headerValues = headerInfo?.values || [];
+  for (const value of headerValues) {
+    for (const { ua, directives } of parseXRobotsTag(value)) {
+      rows.push({ label: ua ? `X-Robots-Tag (${ua})` : 'X-Robots-Tag', directives });
+    }
+  }
+
   const blocking = new Set();
-  for (const { key, content } of robots) {
-    for (const d of parseDirectives(content)) {
-      if (ROBOTS_BLOCKING.includes(d.toLowerCase())) blocking.add(`${key.toLowerCase()}: ${d.toLowerCase()}`);
+  for (const { label, directives } of rows) {
+    const tr = el('tr');
+    tr.dataset.search = (label + ' ' + directives.join(' ')).toLowerCase();
+    tr.appendChild(el('td', 'k', label));
+    const td = el('td');
+    for (const d of directives) {
+      const isBlocking = ROBOTS_BLOCKING.includes(d.toLowerCase());
+      if (isBlocking) blocking.add(`${label.toLowerCase()}: ${d.toLowerCase()}`);
+      td.appendChild(el('span', isBlocking ? 'directive blocking' : 'directive', d));
     }
+    tr.appendChild(td);
+    table.appendChild(tr);
   }
 
-  if (!robots.length) {
-    head.appendChild(el('span', 'meta', 'no tags'));
-    body.appendChild(el('div', 'hint', 'No robots meta tags. Crawlers default to index, follow.'));
-  } else {
-    head.appendChild(el('span', 'meta', `${robots.length} tag${robots.length === 1 ? '' : 's'}`));
-    if (blocking.size) head.appendChild(el('span', 'warn', [...blocking].join(', ')));
-
-    const table = el('table', 'meta-table');
-    for (const { key, content } of robots) {
-      const tr = el('tr');
-      tr.dataset.search = (key + ' ' + content).toLowerCase();
-      tr.appendChild(el('td', 'k', key));
-      const td = el('td');
-      for (const d of parseDirectives(content)) {
-        const isBlocking = ROBOTS_BLOCKING.includes(d.toLowerCase());
-        td.appendChild(el('span', isBlocking ? 'directive blocking' : 'directive', d));
-      }
-      tr.appendChild(td);
-      table.appendChild(tr);
+  // Header status row when there's nothing to list for X-Robots-Tag.
+  if (!headerValues.length) {
+    const tr = el('tr');
+    tr.dataset.search = 'x-robots-tag';
+    tr.appendChild(el('td', 'k', 'X-Robots-Tag'));
+    const td = el('td');
+    if (headerInfo?.error) {
+      td.appendChild(el('span', 'hint', `Couldn't fetch headers: ${headerInfo.error} `));
+      td.appendChild(fetchHeadersButton('Retry'));
+    } else if (headerInfo) {
+      td.appendChild(el('span', 'hint', 'Not sent'));
+    } else {
+      td.appendChild(el('span', 'hint', 'Not captured: DevTools wasn’t open when this page loaded. '));
+      const reload = el('button', 'inline', 'Reload page');
+      reload.addEventListener('click', () => chrome.devtools.inspectedWindow.reload({}));
+      td.appendChild(reload);
+      td.appendChild(fetchHeadersButton('Fetch headers'));
     }
-    body.appendChild(table);
+    tr.appendChild(td);
+    table.appendChild(tr);
   }
 
-  body.appendChild(el('div', 'hint robots-note',
-    'An X-Robots-Tag HTTP header or robots.txt can also affect crawling and indexing, and neither is shown here.'));
+  const metaCount = robots.length;
+  head.appendChild(el('span', 'meta',
+    `${metaCount} meta tag${metaCount === 1 ? '' : 's'}`
+    + (headerValues.length ? ' + X-Robots-Tag header' : '')));
+  if (blocking.size) head.appendChild(el('span', 'warn', [...blocking].join(', ')));
+
+  body.appendChild(table);
+  if (!robots.length && !headerValues.length && headerInfo && !headerInfo.error) {
+    body.appendChild(el('div', 'hint', 'No robots meta tags or X-Robots-Tag header. Crawlers default to index, follow.'));
+  }
+
+  let note = 'robots.txt can also block crawling and isn’t checked here.';
+  if (headerInfo?.source === 'har') {
+    note = `Headers from the original page load (HTTP ${headerInfo.status}). ` + note;
+  } else if (headerInfo?.source === 'fetch' && !headerInfo.error) {
+    note = `Headers from a new ${headerInfo.method} request at ${headerInfo.time} (HTTP ${headerInfo.status}), `
+      + 'which may differ from the original response. ' + note;
+  }
+  body.appendChild(el('div', 'hint robots-note', note));
 
   block.appendChild(head);
   block.appendChild(body);
   output.appendChild(block);
-  return { count: robots.length, blocking: [...blocking] };
+  return { count: rows.length, blocking: [...blocking] };
+}
+
+// ---------- Response headers ----------
+
+// Fetched-header results, keyed by URL, for pages with no HAR entry.
+const fetchedHeaders = new Map();
+
+function getHar() {
+  return new Promise((resolve) => {
+    try {
+      chrome.devtools.network.getHAR((har) => resolve(har));
+    } catch (_) {
+      resolve(null);
+    }
+  });
+}
+
+// The original document response, if DevTools was open when it loaded.
+async function headersFromHar(url) {
+  const har = await getHar();
+  const entries = (har?.entries || []).filter((e) => stripHash(e.request.url) === stripHash(url)
+    && (e._resourceType === 'document' || /html/.test(e.response?.content?.mimeType || '')));
+  const entry = entries[entries.length - 1];
+  if (!entry || !entry.response.status) return null;
+  const values = entry.response.headers
+    .filter((h) => h.name.toLowerCase() === 'x-robots-tag')
+    .flatMap((h) => h.value.split('\n'))
+    .map((v) => v.trim())
+    .filter(Boolean);
+  return { source: 'har', status: entry.response.status, values };
+}
+
+// Runs in the page so the request carries the page's cookies and origin.
+function startHeaderFetch() {
+  const key = '__schemaViewerHeaders';
+  window[key] = null;
+  const opts = { credentials: 'include', cache: 'no-store' };
+  let method = 'HEAD';
+  fetch(location.href, { ...opts, method })
+    .then((r) => {
+      if (r.status !== 405) return r;
+      method = 'GET';
+      return fetch(location.href, { ...opts, method });
+    })
+    .then((r) => {
+      if (r.body) r.body.cancel();
+      window[key] = { method, status: r.status, value: r.headers.get('x-robots-tag') };
+    })
+    .catch((e) => { window[key] = { error: String(e) }; });
+}
+
+function evalInPage(expr) {
+  return new Promise((resolve, reject) => {
+    chrome.devtools.inspectedWindow.eval(expr, (result, err) => (err ? reject(err) : resolve(result)));
+  });
+}
+
+async function fetchHeaders(url) {
+  await evalInPage(`(${startHeaderFetch.toString()})()`);
+  for (let i = 0; i < 50; i++) {
+    await new Promise((r) => setTimeout(r, 200));
+    const res = await evalInPage('window.__schemaViewerHeaders');
+    if (!res) continue;
+    await evalInPage('delete window.__schemaViewerHeaders');
+    if (res.error) return { source: 'fetch', error: res.error };
+    return {
+      source: 'fetch',
+      method: res.method,
+      status: res.status,
+      time: new Date().toLocaleTimeString(),
+      values: res.value ? [res.value] : [],
+    };
+  }
+  return { source: 'fetch', error: 'timed out' };
+}
+
+function fetchHeadersButton(label) {
+  const btn = el('button', 'inline', label);
+  btn.addEventListener('click', async () => {
+    if (!lastResult) return;
+    btn.disabled = true;
+    btn.textContent = 'Fetching…';
+    const url = lastResult.url;
+    let info;
+    try {
+      info = await fetchHeaders(url);
+    } catch (err) {
+      info = { source: 'fetch', error: err.value || err.description || String(err) };
+    }
+    fetchedHeaders.set(stripHash(url), info);
+    if (lastResult?.url === url) {
+      lastResult.headerInfo = info;
+      render();
+    }
+  });
+  return btn;
 }
 
 // ---------- Canonical / hreflang ----------
-
-const stripHash = (u) => u.split('#')[0];
 
 function renderLinks(pageUrl, canonical, hreflang) {
   const block = el('section', 'block meta-block');
@@ -532,7 +686,7 @@ function render() {
   }
 
   const metaCounts = showMeta ? renderMeta(meta) : { og: 0, tw: 0 };
-  const robotsInfo = showMeta ? renderRobots(robots) : null;
+  const robotsInfo = showMeta ? renderRobots(robots, lastResult.headerInfo) : null;
   const linksInfo = showMeta ? renderLinks(url, canonical, hreflang) : null;
 
   const counts = {};
@@ -598,7 +752,9 @@ function setAllOpen(open) {
 
 async function scan() {
   try {
-    lastResult = await inspect();
+    const result = await inspect();
+    result.headerInfo = await headersFromHar(result.url) || fetchedHeaders.get(stripHash(result.url)) || null;
+    lastResult = result;
     render();
   } catch (err) {
     lastResult = null;
